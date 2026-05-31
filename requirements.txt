@@ -1,0 +1,3 @@
+iphone_backup_decrypt
+fastapi
+uvicorn[standard]

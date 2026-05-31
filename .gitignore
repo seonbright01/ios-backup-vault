@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+*.egg-info/
+build/
+dist/
+
+# Virtual envs
+.venv/
+venv/
+env/
+
+# iPhone backups & decrypted artifacts — NEVER commit
+backups/
+*.db
+*.sqlite
+*.plist
+*.original_state.json
+*.vault_meta.json
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+
+# Agent/tooling
+.claude/

@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ios-backup-vault"
+version = "0.1.0"
+description = "Local-only encrypted iPhone backup imaging & local web viewer"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+dependencies = ["iphone_backup_decrypt", "fastapi", "uvicorn[standard]"]
+
+[project.scripts]
+ios-backup-vault = "ios_backup_vault.cli:main"
+
+[tool.setuptools]
+packages = ["ios_backup_vault", "ios_backup_vault.parsers"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-v"
