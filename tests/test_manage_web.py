@@ -62,6 +62,14 @@ def test_api_meta_mask_and_reveal(tmp_path):
     assert revealed["serial"] == "ABCDEF123456"
 
 
+def test_api_meta_unregistered_path_forbidden(tmp_path):
+    client, _ = _client(tmp_path)
+    # 레지스트리에 없는 임의 경로는 거부(임의 plist 읽기/PII 노출 차단)
+    r = client.get("/api/meta", params={"path": "/etc", "reveal": 1})
+    assert r.status_code == 403
+    assert "error" in r.json()
+
+
 def test_registry_add_invalid(tmp_path):
     reg = _write_registry(tmp_path)
 

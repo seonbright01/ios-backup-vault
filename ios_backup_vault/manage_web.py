@@ -4,6 +4,7 @@ metadata_fn 주입으로 단위 테스트 용이. 실제 내용 열람은 기존
 모든 사용자 문자열은 HTML 이스케이프. 127.0.0.1 바인드는 호출자(cli manage)가 담당.
 """
 import logging
+from pathlib import Path
 
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -40,7 +41,7 @@ input[type=text]{padding:6px;border:1px solid #ccc;border-radius:6px;min-width:2
 <p class=muted>열람: <code>python -m ios_backup_vault.cli view --backup &lt;폴더&gt;</code></p></div>
 <h2>등록된 백업</h2><div id=list class=muted>로딩…</div></main>
 <script>
-function esc(s){return (s==null?'':String(s)).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]))}
+function esc(s){return (s==null?'':String(s)).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
 async function jget(u){const r=await fetch(u);return r.json()}
 async function jpost(u,b){const r=await fetch(u,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b)});return r.json()}
 function card(x){const enc=x.is_encrypted?'<span class="badge on">암호화</span>':'<span class="badge off">평문</span>';
@@ -51,13 +52,16 @@ function card(x){const enc=x.is_encrypted?'<span class="badge on">암호화</spa
  ${enc}${full}
  <div class=kv>iOS ${esc(x.ios_version)} · 빌드 ${esc(x.build)} · UDID ${esc(x.udid)}</div>
  <div class=kv>이미징 ${esc(x.imaged_at)} · 용량 ${size} · 앱 ${Number(x.app_count)}개</div>
- <div class=kv>시리얼 <span class="pii" data-path="${p}">${esc(x.serial)}</span> · IMEI <span class="pii">${esc(x.imei)}</span> · 전화 <span class="pii">${esc(x.phone)}</span>
- <button onclick="reveal('${p}',this)">PII 보기</button></div>
+ <div class=kv>시리얼 <span class="pii">${esc(x.serial)}</span> · IMEI <span class="pii">${esc(x.imei)}</span> · 전화 <span class="pii">${esc(x.phone)}</span>
+ <button class=revealbtn data-path="${p}">PII 보기</button></div>
  <div class=kv>열람: <code>python -m ios_backup_vault.cli view --backup ${p}</code></div>
- <button onclick="rm('${p}')">목록에서 제거</button></div>`}
+ <button class=rmbtn data-path="${p}">목록에서 제거</button></div>`}
 async function load(){const a=await jget('/api/backups');const el=document.getElementById('list');
  if(!a.length){el.innerHTML='<p class=muted>등록된 백업이 없습니다.</p>';return}
  el.innerHTML=a.map(card).join('')}
+document.getElementById('list').addEventListener('click',e=>{const b=e.target.closest('button');if(!b)return;
+ if(b.classList.contains('revealbtn'))reveal(b.dataset.path,b);
+ else if(b.classList.contains('rmbtn'))rm(b.dataset.path)});
 async function reveal(path,btn){const m=await jget('/api/meta?reveal=1&path='+encodeURIComponent(path));
  const card=btn.closest('.card');const piis=card.querySelectorAll('.pii');
  if(piis[0])piis[0].textContent=m.serial;if(piis[1])piis[1].textContent=m.imei;if(piis[2])piis[2].textContent=m.phone}
@@ -106,6 +110,10 @@ def create_manager_app(registry_path, *, metadata_fn=read_backup_metadata) -> Fa
 
     @app.get("/api/meta")
     async def api_meta(path: str, reveal: int = 0):
+        # 임의 경로 plist 읽기/무제한 PII 노출 방지: 레지스트리에 등록된 경로만 허용.
+        registered = {str(Path(b["path"]).resolve()) for b in registry.load(registry_path)}
+        if str(Path(path).resolve()) not in registered:
+            return JSONResponse({"error": "등록되지 않은 경로입니다."}, status_code=403)
         return _meta(path, reveal=bool(reveal))
 
     @app.post("/api/registry/add")

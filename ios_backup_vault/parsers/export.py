@@ -124,6 +124,17 @@ def _serialize_html(items):
     return {"export.html": "".join(parts).encode("utf-8")}
 
 
+_FORMULA_PREFIXES = ("=", "+", "-", "@", "\t", "\r")
+
+
+def _sanitize_cell(v):
+    """엑셀/시트 수식 인젝션 방지: 위험 문자로 시작하는 셀 앞에 ' 삽입."""
+    s = "" if v is None else str(v)
+    if s and s[0] in _FORMULA_PREFIXES:
+        return "'" + s
+    return s
+
+
 def _serialize_csv(items):
     out = {}
     for cat, (header, row_fn) in _CSV_SPEC.items():
@@ -135,7 +146,7 @@ def _serialize_csv(items):
         w.writerow(header)
         for c in rows:
             for r in row_fn(c):
-                w.writerow(r)
+                w.writerow([_sanitize_cell(cell) for cell in r])
         out[f"{cat}.csv"] = buf.getvalue().encode("utf-8-sig")
     return out
 
