@@ -45,7 +45,7 @@ stored or logged).
 ## Install
 
 ```bash
-git clone https://github.com/<you>/ios-backup-vault.git
+git clone https://github.com/seonbright01/ios-backup-vault.git
 cd ios-backup-vault
 python3 -m venv .venv
 source .venv/bin/activate
