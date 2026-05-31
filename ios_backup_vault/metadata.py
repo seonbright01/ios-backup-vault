@@ -63,7 +63,11 @@ def read_backup_metadata(path, *, with_size=True, reveal_pii=False) -> dict:
     if status_file.is_file():
         status = plistlib.loads(status_file.read_bytes())
 
-    imaged_at = _iso(status.get("Date")) or _iso(manifest.get("Date"))
+    # "이미징 시점" = 이 백업이 실제 완료된 시각(Info Last Backup Date) 우선.
+    # Status/Manifest의 Date는 스냅샷 기준일(과거 origin일 수 있음)이라 fallback으로만.
+    imaged_at = (_iso(info.get("Last Backup Date"))
+                 or _iso(status.get("Date")) or _iso(manifest.get("Date")))
+    snapshot_date = _iso(status.get("Date")) or _iso(manifest.get("Date"))
 
     def _pii(value):
         raw = "" if value is None else str(value)
@@ -77,6 +81,7 @@ def read_backup_metadata(path, *, with_size=True, reveal_pii=False) -> dict:
         "ios_version": info.get("Product Version", ""),
         "build": info.get("Build Version", ""),
         "imaged_at": imaged_at,
+        "snapshot_date": snapshot_date,
         "last_backup_date": _iso(info.get("Last Backup Date")),
         "is_encrypted": bool(manifest.get("IsEncrypted", False)),
         "is_full": bool(status.get("IsFullBackup", False)),

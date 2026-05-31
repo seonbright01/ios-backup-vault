@@ -28,16 +28,17 @@ def _make_backup(tmp_path):
         "Last Backup Date": datetime(2026, 5, 30, 12, 0, 0),
         "Installed Applications": ["a", "b"],
     }
+    # 스냅샷 기준일(Date)은 과거(origin)일 수 있음 — 실제 이미징 시점과 다른 경우 재현.
     manifest = {
         "IsEncrypted": True,
-        "Date": datetime(2026, 5, 30, 12, 0, 0),
+        "Date": datetime(2026, 1, 15, 17, 23, 1),
         "Version": "10.0",
         "WasPasscodeSet": True,
     }
     status = {
         "IsFullBackup": True,
         "UUID": "X",
-        "Date": datetime(2026, 5, 30, 12, 0, 0),
+        "Date": datetime(2026, 1, 15, 17, 26, 43),
         "BackupState": "new",
         "SnapshotState": "finished",
     }
@@ -83,7 +84,9 @@ def test_read_backup_metadata_masked(tmp_path):
     assert m["snapshot_state"] == "finished"
     assert m["backup_state"] == "new"
     assert m["size_bytes"] is None
+    # 이미징 시점 = Last Backup Date(실제 완료), 스냅샷 기준일은 별도
     assert m["imaged_at"] == "2026-05-30T12:00:00"
+    assert m["snapshot_date"] == "2026-01-15T17:26:43"
     assert m["last_backup_date"] == "2026-05-30T12:00:00"
     assert m["serial"] == "•" * 8 + "3456"
     assert m["phone"] == "•" * 1 + "1010"  # "+1010" -> keep last 4

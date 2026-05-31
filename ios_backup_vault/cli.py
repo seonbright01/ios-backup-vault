@@ -1,6 +1,5 @@
 """CLI 진입점 + precheck 오케스트레이션."""
 import argparse
-import getpass
 import shutil
 import sys
 from dataclasses import dataclass
@@ -218,18 +217,24 @@ def main(argv: list[str] | None = None) -> int:
             print(f"[경고] 레지스트리 자동 등록 실패: {exc}", file=sys.stderr)
         return 0
     if args.command == "view":
-        from ios_backup_vault.vault import Vault, VaultError
-        from ios_backup_vault.viewer_data import ViewerData
-        from ios_backup_vault.web import create_app
+        from ios_backup_vault.app import create_app, _backup_id
         import uvicorn
-        pw = getpass.getpass("백업 암호: ")
-        vault = Vault(backup_directory=args.backup, passphrase=pw)
+        reg = registry.registry_path()
+        # 대상 백업을 미리 등록(이미 있으면 갱신)하고 사전선택 상태로 연다.
         try:
-            vault.open()
-        except VaultError as exc:
+            entry = registry.add(
+                reg, args.backup,
+                now_iso=datetime.now().isoformat(timespec="seconds"),
+            )
+        except ValueError as exc:
             print(f"[오류] {exc}", file=sys.stderr); return 1
-        print(f"복호화 OK — http://127.0.0.1:{args.port} (Ctrl+C 종료). 외부 전송 없음.")
-        uvicorn.run(create_app(ViewerData(vault)), host="127.0.0.1", port=args.port, log_level="warning")
+        except OSError as exc:
+            print(f"[오류] 경로 접근 실패: {exc}", file=sys.stderr); return 1
+        bid = _backup_id(entry["path"])
+        print(f"통합 앱 — http://127.0.0.1:{args.port} (Ctrl+C 종료). 외부 전송 없음.")
+        print("패스프레이즈는 브라우저의 '열기' 창에서 입력하세요.")
+        uvicorn.run(create_app(reg, preselect_id=bid),
+                    host="127.0.0.1", port=args.port, log_level="warning")
         return 0
     if args.command == "info":
         try:
@@ -273,11 +278,11 @@ def main(argv: list[str] | None = None) -> int:
             )
         return 0
     if args.command == "manage":
-        from ios_backup_vault.manage_web import create_manager_app
+        from ios_backup_vault.app import create_app
         import uvicorn
         reg = registry.registry_path()
-        print(f"관리 대시보드 — http://127.0.0.1:{args.port} (Ctrl+C 종료). 외부 전송 없음.")
-        uvicorn.run(create_manager_app(reg), host="127.0.0.1", port=args.port, log_level="warning")
+        print(f"통합 앱 — http://127.0.0.1:{args.port} (Ctrl+C 종료). 외부 전송 없음.")
+        uvicorn.run(create_app(reg), host="127.0.0.1", port=args.port, log_level="warning")
         return 0
     return 1
 
