@@ -528,7 +528,7 @@ INDEX_HTML = """<!DOCTYPE html>
       </span>
       <span>
         <div class="name">iOS 백업 도구</div>
-        <div class="sub">로컬 전용</div>
+        <div class="sub">로컬 · 클라우드</div>
       </span>
     </div>
 
@@ -583,6 +583,21 @@ INDEX_HTML = """<!DOCTYPE html>
       </div>
 
       <div class="card-grid" id="cardGrid"><!-- renderDashboard() 가 채움 --></div>
+
+      <!-- ===== 클라우드 소스 (GCS) ===== -->
+      <div class="page-head" style="margin-top:var(--sp-6)">
+        <div>
+          <h2 class="page-title" style="font-size:18px">클라우드 백업</h2>
+          <p class="page-desc">GCS에 보관된 백업입니다. [열기]를 누르면 보는 파일만 받아 로컬에서 복호화합니다.</p>
+        </div>
+        <button class="btn" id="cloudRefresh">새로고침</button>
+      </div>
+      <div class="card-grid" id="cloudGrid"><!-- renderCloud() 가 채움 --></div>
+
+      <div class="cache-foot" style="margin-top:var(--sp-4);display:flex;align-items:center;justify-content:space-between;gap:var(--sp-3);border-top:1px solid var(--border);padding-top:var(--sp-3)">
+        <span class="helper">캐시 용량: <span class="mono" id="cacheSize">—</span></span>
+        <button class="btn btn-sm" id="cacheClear">캐시 비우기</button>
+      </div>
     </section>
 
     <!-- ============ 화면 3: 열람 ============ -->
@@ -595,7 +610,7 @@ INDEX_HTML = """<!DOCTYPE html>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="2" width="12" height="20" rx="2.5"/><line x1="10" y1="18.5" x2="14" y2="18.5"/></svg>
           </span>
           <span>
-            <div class="lbl">현재 열린 백업</div>
+            <div class="lbl">현재 열린 백업 <span class="badge" id="openSource" hidden></span></div>
             <div class="nm" id="openDeviceName">—</div>
           </span>
         </div>
@@ -907,6 +922,96 @@ $("#cardGrid").addEventListener("click", async (e)=>{
   }
 });
 
+/* =========================================================================
+   화면 1b: 클라우드 백업(GCS) + 캐시
+   ========================================================================= */
+let CLOUD = [];
+function cloudLabel(c){ return c.device_name || c.udid || "(클라우드 백업)"; }
+
+async function loadCloud(){
+  const grid = $("#cloudGrid");
+  grid.innerHTML = '<p class="page-desc">불러오는 중…</p>';
+  let d;
+  try { d = await jget("/api/cloud/backups"); }
+  catch(e){ grid.innerHTML = '<p class="page-desc">클라우드를 불러오지 못했습니다: '+esc(String(e.message||e))+'</p>'; return; }
+  if(d && d.error){
+    grid.innerHTML = '<p class="page-desc">클라우드 미설정 또는 오프라인: '+esc(String(d.error))+'</p>';
+    return;
+  }
+  CLOUD = Array.isArray(d) ? d : [];
+  renderCloud();
+}
+function renderCloud(){
+  const grid = $("#cloudGrid");
+  if(!CLOUD.length){ grid.innerHTML = '<p class="page-desc">클라우드에 백업이 없습니다.</p>'; return; }
+  grid.innerHTML = CLOUD.map(c => {
+    const encBadge = c.is_encrypted
+      ? '<span class="badge badge-enc"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg>암호화</span>'
+      : '<span class="badge badge-idle">비암호화</span>';
+    const typeBadge = c.is_full
+      ? '<span class="badge badge-full">전체</span>'
+      : '<span class="badge badge-incr">증분</span>';
+    const errRow = c.error ? '<dt>상태</dt><dd>'+esc(c.error)+'</dd>' : '';
+    return ''
+    + '<article class="bcard">'
+    +   '<div class="bcard-head">'
+    +     '<span class="device-ico" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 10a4 4 0 0 0-7.6-1.5A3.5 3.5 0 1 0 6 16h11a3 3 0 0 0 1-5.8z"/></svg></span>'
+    +     '<div><div class="bcard-title">'+esc(cloudLabel(c))+'</div><div class="bcard-model">'+esc(c.product_type||"")+'</div></div>'
+    +   '</div>'
+    +   '<div class="bcard-badges">'+encBadge+typeBadge+'</div>'
+    +   '<dl class="bcard-meta">'
+    +     '<dt>iOS / 빌드</dt><dd class="mono">'+esc(c.ios_version||"")+(c.build?' ('+esc(c.build)+')':'')+'</dd>'
+    +     '<dt>UDID</dt><dd class="mono">'+esc(c.udid)+'</dd>'
+    +     '<dt>이미징 시점</dt><dd class="mono">'+esc(c.imaged_at||"—")+'</dd>'
+    +     '<dt>스냅샷 기준일</dt><dd class="mono">'+esc(c.snapshot_date||"—")+'</dd>'
+    +     '<dt>용량</dt><dd class="mono">'+(c.size_bytes==null?"클라우드(원격)":esc(fmtSize(c.size_bytes)))+'</dd>'
+    +     errRow
+    +   '</dl>'
+    +   '<dl class="pii-row">'
+    +     piiRow(c.udid, "시리얼", "serial", c.serial, c._serial)
+    +     piiRow(c.udid, "IMEI", "imei", c.imei, c._imei)
+    +     piiRow(c.udid, "전화번호", "phone", c.phone, c._phone)
+    +   '</dl>'
+    +   '<div class="bcard-foot">'
+    +     '<button class="btn btn-primary btn-sm" data-cloud-open="'+esc(c.udid)+'">열기</button>'
+    +   '</div>'
+    + '</article>';
+  }).join("");
+}
+$("#cloudGrid").addEventListener("click", async (e)=>{
+  const piiBtn = e.target.closest("[data-pii]");
+  if(piiBtn){
+    const shownKey = piiBtn.dataset.pii;
+    const udid = shownKey.split(":")[0];
+    piiShown[shownKey] = !piiShown[shownKey];
+    const c = CLOUD.find(x=>x.udid===udid);
+    if(piiShown[shownKey] && c && c._serial == null){
+      try {
+        const m = await jget("/api/cloud/backups/"+encodeURIComponent(udid)+"?reveal=1");
+        c._serial = m.serial; c._imei = m.imei; c._phone = m.phone;
+      } catch(e) {}
+    }
+    renderCloud();
+    return;
+  }
+  const btn = e.target.closest("[data-cloud-open]");
+  if(btn){ openCloudModal(btn.dataset.cloudOpen); return; }
+});
+$("#cloudRefresh").addEventListener("click", loadCloud);
+
+async function loadCacheSize(){
+  try {
+    const d = await jget("/api/cache/size");
+    $("#cacheSize").textContent = fmtSize(d.bytes);
+  } catch(e){ $("#cacheSize").textContent = "—"; }
+}
+$("#cacheClear").addEventListener("click", async ()=>{
+  if(!confirm("로컬 캐시를 모두 비울까요? (열린 클라우드 백업은 닫힙니다)")) return;
+  try { await jpost("/api/cache/clear", {}); }
+  catch(e){ alert("캐시 비우기 실패: " + (e.message||e)); }
+  loadCacheSize();
+});
+
 $("#addFolder").addEventListener("click", async ()=>{
   try {
     const r = await jpost("/api/backups/scan-folder", {});
@@ -931,8 +1036,10 @@ $("#addPath").addEventListener("click", async ()=>{
 let activeBackupId = null;
 let activeBackupName = "—";
 let lastFocused = null;
+let cloudOpenUdid = null;  // 비-null이면 클라우드 열기 모드
 
 function openModal(backupId){
+  cloudOpenUdid = null;
   const b = BACKUPS.find(x=>x.id===backupId);
   activeBackupId = backupId;
   lastFocused = document.activeElement;
@@ -942,8 +1049,20 @@ function openModal(backupId){
   $("#openModal").hidden = false;
   $("#passphrase").focus();
 }
+function openCloudModal(udid){
+  const c = CLOUD.find(x=>x.udid===udid);
+  cloudOpenUdid = udid;
+  activeBackupId = null;
+  lastFocused = document.activeElement;
+  $("#openModalSub").textContent = c ? ("클라우드 · " + cloudLabel(c)) : ("클라우드 · " + udid);
+  $("#passphrase").value = "";
+  setAlert(null);
+  $("#openModal").hidden = false;
+  $("#passphrase").focus();
+}
 function closeModal(){
   $("#openModal").hidden = true;
+  cloudOpenUdid = null;
   if(lastFocused) lastFocused.focus();
 }
 function setAlert(kind, text){
@@ -973,9 +1092,28 @@ $("#pwToggle").addEventListener("click", ()=>{
 });
 
 $("#modalOpen").addEventListener("click", async ()=>{
-  if(!activeBackupId) return;
   const pass = $("#passphrase").value;
   setAlert("loading");
+  // 클라우드 열기 분기
+  if(cloudOpenUdid){
+    const udid = cloudOpenUdid;
+    try {
+      const r = await jpost("/api/cloud/open", {udid: udid, passphrase: pass});
+      if(r.ok){
+        const c = CLOUD.find(x=>x.udid===udid);
+        activeBackupName = (c && cloudLabel(c)) || udid;
+        closeModal();
+        openViewer(r.id);
+        loadCacheSize();
+      } else {
+        setAlert("error", r.error || "패스프레이즈가 올바르지 않거나 클라우드에 연결할 수 없습니다.");
+      }
+    } catch(e) {
+      setAlert("error", String(e.message||e));
+    }
+    return;
+  }
+  if(!activeBackupId) return;
   try {
     const r = await jpost("/api/backups/"+encodeURIComponent(activeBackupId)+"/open",
                           {passphrase: pass});
@@ -1000,6 +1138,13 @@ function vurl(suffix){ return "/api/backups/"+encodeURIComponent(activeBackupId)
 function openViewer(backupId){
   activeBackupId = backupId;
   $("#openDeviceName").textContent = activeBackupName || "—";
+  const isCloud = String(backupId).startsWith("cloud-");
+  const src = $("#openSource");
+  if(src){
+    src.hidden = false;
+    src.textContent = isCloud ? "클라우드(GCS)" : "로컬";
+    src.className = "badge " + (isCloud ? "badge-enc" : "badge-idle");
+  }
   $("#navViewer").disabled = false;
   $$('.nav-item[data-nav="viewer"]').forEach(el=>el.disabled=false);
   navigate("viewer");
@@ -1332,6 +1477,8 @@ $("#startBackup").addEventListener("click", async ()=>{
    초기 렌더
    ========================================================================= */
 loadDashboard();
+loadCloud();
+loadCacheSize();
 navigate("dashboard");
 
 /* 서버가 사전선택 백업 id를 주입하면 열기 모달을 띄운다(cli view --backup). */

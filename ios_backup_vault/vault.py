@@ -20,6 +20,20 @@ def _make_default_backend(backup_directory: str, passphrase: str):
     return EncryptedBackup(backup_directory=backup_directory, passphrase=passphrase)
 
 
+def _ensure_tmp_dir():
+    """임시 평문 파일을 보호 위치(캐시루트)에 생성하기 위한 디렉터리.
+
+    캐시루트 생성에 실패하면 None을 반환해 시스템 기본 temp로 폴백한다.
+    """
+    try:
+        from ios_backup_vault.paths import cache_root
+        d = cache_root()
+        os.makedirs(d, mode=0o700, exist_ok=True)
+        return d
+    except OSError:
+        return None
+
+
 class Vault:
     def __init__(self, *, backup_directory: str | None = None, passphrase: str | None = None, backend=None):
         # 단일 워커 스레드: 백엔드(및 그 sqlite 연결)를 한 스레드에 고정.
@@ -45,9 +59,21 @@ class Vault:
     def read_bytes_and_mtime(self, relative_path: str, *, domain_like: str | None = None):
         """(bytes, mtime) 반환. mtime은 백업 Manifest의 원본 LastModified(라이브러리가
         추출 시 os.utime로 파일에 복원). 없으면 mtime=None. 파일 없으면 None 반환."""
+        # 클라우드 backend(fetch_blob+_resolve 보유)는 SQLite 단일스레드(_executor)에
+        # 네트워크 fetch가 묶이지 않도록, fileID는 executor에서 resolve(SQLite)하고
+        # 블롭 fetch는 executor 밖(호출 스레드)에서 먼저 수행한다.
+        # 로컬 backend는 두 속성이 없어 기존 경로 그대로(무회귀).
+        fetch_blob = getattr(self._backend, "fetch_blob", None)
+        resolve = getattr(self._backend, "_resolve", None)
+        if fetch_blob and resolve:
+            fid = self._call(resolve, relative_path, domain_like)  # executor 내 SQLite
+            if fid:
+                fetch_blob(fid)               # 네트워크: 호출 스레드(executor 밖)
         # 인메모리 복호화(extract_file_as_bytes)는 대용량 파일에서 크기가 어긋나므로,
         # 청크 방식 extract_file(디스크)로 복호화한 뒤 읽는다.
-        fd, tmp = tempfile.mkstemp(prefix="vault-")
+        # 임시 평문은 가능하면 캐시루트(보호 위치)에 생성한다.
+        tmp_dir = _ensure_tmp_dir()
+        fd, tmp = tempfile.mkstemp(prefix="vault-", dir=tmp_dir)
         os.close(fd)
 
         def _extract():
@@ -61,7 +87,7 @@ class Vault:
             except FileNotFoundError:
                 return None
             except Exception as exc:
-                raise VaultError(f"'{relative_path}' 추출 실패: {type(exc).__name__}: {exc}") from exc
+                raise VaultError(f"'{relative_path}' 추출 실패({type(exc).__name__})") from exc
             try:
                 mtime = os.path.getmtime(tmp)
             except OSError:
@@ -116,4 +142,28 @@ class Vault:
             raise VaultError(f"파일 검색 실패: {exc}") from exc
 
     def close(self) -> None:
+        # 백엔드의 SQLite 연결을 소유 스레드(executor)에서 정리한다. 그렇지 않으면
+        # 객체 GC 시점에 다른 스레드에서 close되며 sqlite3 ProgrammingError(스레드 위반)
+        # 경고와 임시 연결 누수가 발생한다. CloudBackend는 실제 백엔드를 _inner로 감싼다.
+        backend = self._backend
+
+        def _cleanup_on_owner():
+            # 스레드 종속 자원(SQLite 연결)만 소유 스레드에서 닫고 참조를 제거한다.
+            # 임시폴더 삭제(rmtree)는 스레드 안전하므로 라이브러리 __del__에 맡긴다.
+            # (라이브러리 _cleanup() 전체를 부르면 rmtree가 중복돼 GC 시 FileNotFound 경고)
+            for obj in (backend, getattr(backend, "_inner", None)):
+                if obj is None:
+                    continue
+                conn = getattr(obj, "_temp_manifest_db_conn", None)
+                if conn is not None:
+                    try:
+                        conn.close()
+                    except Exception:
+                        pass
+                    obj._temp_manifest_db_conn = None
+
+        try:
+            self._call(_cleanup_on_owner)
+        except Exception:
+            pass
         self._executor.shutdown(wait=False)

@@ -7,13 +7,12 @@ import os
 from pathlib import Path
 
 from ios_backup_vault.metadata import is_backup_dir
+from ios_backup_vault.paths import vault_home
 
 
 def registry_path() -> str:
     """env IOS_BACKUP_VAULT_HOME 있으면 그 아래, 없으면 ~/.ios_backup_vault."""
-    home = os.environ.get("IOS_BACKUP_VAULT_HOME")
-    base = Path(home) if home else Path.home() / ".ios_backup_vault"
-    return str(base / "registry.json")
+    return os.path.join(vault_home(), "registry.json")
 
 
 def load(reg_path) -> list[dict]:

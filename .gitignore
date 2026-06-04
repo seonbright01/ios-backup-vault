@@ -20,6 +20,12 @@ backups/
 *.original_state.json
 *.vault_meta.json
 
+# Cloud credentials / config (defense-in-depth; real path is ~/.ios_backup_vault)
+cloud.json
+credentials
+*-service-account.json
+application_default_credentials.json
+
 # OS / editor
 .DS_Store
 .idea/

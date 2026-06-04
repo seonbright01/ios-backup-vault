@@ -2,12 +2,13 @@
 
 Local-only tool to **image (back up) an iPhone** as an encrypted full backup and
 **browse it in your browser** — messages, photos/videos, contacts, calls,
-WhatsApp, ChatGPT history, Apple Notes — with selective **export** and a
-**backup manager** dashboard.
+WhatsApp, ChatGPT history, Apple Notes — with selective **export**, a
+**backup manager** dashboard, and an optional **cloud archive (GCS)** that keeps
+only ciphertext in the cloud while decryption stays on your Mac.
 
-Everything runs on your own machine. Decrypted data never leaves localhost, and
-the backup passphrase is only held in memory (entered via `getpass`, never
-stored or logged).
+Everything that touches your data runs on your own machine. Decrypted data never
+leaves localhost, and the backup passphrase is only held in memory (entered via
+`getpass`, never stored or logged).
 
 > ⚠️ **Privacy**: an iPhone backup contains highly sensitive data. Keep the
 > backup folder and your passphrase safe. This tool is for backing up and
@@ -28,6 +29,10 @@ stored or logged).
   just point it at any backup folder) and see device info, imaging time, size,
   and encryption status **without** the passphrase. PII (serial/IMEI/phone) is
   masked by default.
+- **Cloud archive (GCS)** — mirror an encrypted backup to a Google Cloud Storage
+  bucket as **ciphertext only**, then browse it from the manager dashboard by
+  fetching just the files you open, on demand. Decryption and the passphrase
+  never leave your Mac.
 
 ---
 
@@ -50,6 +55,13 @@ cd ios-backup-vault
 python3 -m venv .venv
 source .venv/bin/activate
 pip install .            # or: pip install -r requirements.txt
+```
+
+For the cloud archive feature, install the optional `[gcs]` extra (see
+[Cloud archive (GCS)](#cloud-archive-gcs) below):
+
+```bash
+pip install ios-backup-vault[gcs]
 ```
 
 ---
@@ -86,10 +98,103 @@ The registry lives at `~/.ios_backup_vault/registry.json` (override with the
 
 ---
 
+## Cloud archive (GCS)
+
+Mirror an **encrypted** backup to a Google Cloud Storage bucket, then open it
+from the manager dashboard. Only ciphertext is stored in the cloud; the
+passphrase and all decryption stay on your Mac.
+
+### Install
+
+```bash
+pip install ios-backup-vault[gcs]      # optional extra: google-cloud-storage
+```
+
+### Credentials (Application Default Credentials recommended)
+
+This tool **stores no credentials**. With the recommended `--auth adc` mode it
+relies on Google's Application Default Credentials:
+
+```bash
+# Option A — interactive login (recommended)
+gcloud auth application-default login
+
+# Option B — point at a service-account key file
+export GOOGLE_APPLICATION_CREDENTIALS=/path/to/key.json
+```
+
+> Optional: if you prefer to keep a service-account key out of the environment,
+> `--auth keyring --key-file <path>` stores the key in the OS keyring (requires
+> the `keyring` package) and offers to delete the plaintext key file afterward.
+> ADC is still the recommended path.
+
+### IAM — least privilege
+
+Grant **only** `roles/storage.objectAdmin` **scoped to the single bucket** used
+for the vault. Do **not** add a project-wide binding.
+
+```bash
+gsutil iam ch \
+  user:you@example.com:roles/storage.objectAdmin \
+  gs://<bucket>
+```
+
+### Flow
+
+```bash
+# 1) Save cloud config (provider gcs, bucket, prefix, auth mode)
+python -m ios_backup_vault.cli cloud-config --bucket <bucket> --prefix vault --auth adc
+
+# 2) Upload an encrypted backup as ciphertext (optionally clear the local copy)
+python -m ios_backup_vault.cli cloud-upload --backup backups/<UDID> --udid <UDID> [--delete-local]
+
+# 3) List archived devices
+python -m ios_backup_vault.cli cloud-list
+
+# 4) Browse from the dashboard: manage -> cloud card [열기] -> enter passphrase
+#    -> view / export, fetching only the files you open
+python -m ios_backup_vault.cli manage
+```
+
+`--delete-local` removes the local backup folder **only after** an integrity
+gate confirms every file was uploaded at the correct size; on any mismatch the
+local copy is kept.
+
+### How it works
+
+The cloud holds **encrypted backup data (ciphertext) only**. Decryption and the
+passphrase happen **on your Mac alone**. When you browse, only the **files you
+actually open** are fetched on demand into a size-capped LRU cache (with a
+**Clear cache** button in the dashboard); metadata (`Manifest.plist`/
+`Manifest.db`) is fetched once so the listing loads immediately.
+
+### Platform & security notes
+
+- Decryption is **local-only** and the viewer binds to `127.0.0.1`; the
+  passphrase and decrypted plaintext are **never sent to the cloud**.
+- On **macOS**, credentials can come from the system Keychain (or ADC). On
+  **Linux/Windows**, **ADC is recommended** because it avoids the macOS
+  `security` tooling dependency.
+- **FileVault / full-disk encryption is strongly recommended** so that cached
+  ciphertext and any temporary decrypted plaintext on disk are protected at
+  rest.
+
+### Limitations (cloud)
+
+- **Imaging requires a local USB connection.** Creating a backup cannot be done
+  from a serverless cloud — the device must be physically connected to your Mac.
+- **GCS egress costs** apply when fetching files for viewing or export.
+- **Restore** likewise needs a local download of the backup followed by a USB
+  connection to the device.
+
+---
+
 ## Security notes
 
-- Local-only: the viewer binds to `127.0.0.1`; nothing is uploaded.
-- The passphrase is read with `getpass` and kept in memory only.
+- Local-only: the viewer binds to `127.0.0.1`; nothing is uploaded except, when
+  you opt in, the **encrypted** backup to your own GCS bucket.
+- The passphrase is read with `getpass` and kept in memory only — never stored,
+  logged, or sent to the cloud.
 - Manager/metadata views read **unencrypted** backup plists only and never need
   the passphrase; PII is masked unless explicitly revealed.
 
@@ -100,6 +205,9 @@ The registry lives at `~/.ios_backup_vault/registry.json` (override with the
   drawings, and attachments are not rendered).
 - Encrypted third-party apps (KakaoTalk, Telegram, Signal, LINE, …) cannot be
   decrypted by this tool.
+- Imaging requires a local USB connection (no serverless/cloud imaging), and the
+  cloud archive incurs GCS egress costs when files are fetched. See
+  [Cloud archive (GCS)](#cloud-archive-gcs).
 
 ## Development
 

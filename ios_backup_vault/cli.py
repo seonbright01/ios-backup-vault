@@ -89,6 +89,21 @@ def run_backup_command(
     )
 
 
+def _make_store():
+    import json
+    from ios_backup_vault.paths import cloud_config_path
+    from ios_backup_vault.object_store import ObjectStore, GcsClient
+    from ios_backup_vault import secrets
+    with open(cloud_config_path()) as f:
+        cfg = json.load(f)
+    provider = cfg.get("provider", "gcs")
+    if provider != "gcs":
+        raise RuntimeError(f"미지원 provider: {provider}")
+    creds = secrets.resolve_credentials(cfg)   # ADC면 None
+    client = GcsClient(cfg["bucket"], credentials=creds)
+    return ObjectStore(bucket=cfg["bucket"], prefix=cfg.get("prefix", ""), client=client)
+
+
 def _gb(n: int) -> str:
     return f"{n / 1_000_000_000:.1f}GB"
 
@@ -138,6 +153,16 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("list", help="등록된 백업 목록 표시")
     mg = sub.add_parser("manage", help="백업 관리 웹 대시보드(로컬)")
     mg.add_argument("--port", type=int, default=8765)
+    cc = sub.add_parser("cloud-config", help="클라우드(GCS) 설정 저장")
+    cc.add_argument("--bucket", required=True, help="버킷 이름")
+    cc.add_argument("--prefix", default="", help="객체 키 접두사(선택)")
+    cc.add_argument("--auth", choices=["adc", "keyring"], default="adc")
+    cc.add_argument("--key-file")
+    cu = sub.add_parser("cloud-upload", help="로컬 백업을 클라우드로 업로드")
+    cu.add_argument("--backup", required=True, help="백업 폴더(<udid>) 경로")
+    cu.add_argument("--udid", required=True, help="UDID(원격 키 접두)")
+    cu.add_argument("--delete-local", action="store_true")
+    sub.add_parser("cloud-list", help="클라우드에 저장된 UDID 목록")
     args = parser.parse_args(argv)
 
     if args.command == "precheck":
@@ -283,6 +308,40 @@ def main(argv: list[str] | None = None) -> int:
         reg = registry.registry_path()
         print(f"통합 앱 — http://127.0.0.1:{args.port} (Ctrl+C 종료). 외부 전송 없음.")
         uvicorn.run(create_app(reg), host="127.0.0.1", port=args.port, log_level="warning")
+        return 0
+    if args.command == "cloud-config":
+        import json, os
+        from ios_backup_vault.paths import cloud_config_path
+        cfg = {"provider": "gcs", "bucket": args.bucket, "prefix": args.prefix,
+               "auth": args.auth, "account": "gcs"}
+        if args.auth == "keyring":
+            if not args.key_file:
+                print("[오류] --auth keyring 에는 --key-file 필요", file=sys.stderr); return 1
+            from ios_backup_vault import secrets
+            with open(args.key_file) as _kf:
+                secrets.store_key_via_keyring("gcs", _kf.read())
+            print("자격증명을 keyring에 저장함.")
+            # 평문 서비스계정 키가 디스크에 남지 않도록 기본 삭제(보안). 명시적 'n'만 보관.
+            if input(f"평문 키파일 {args.key_file} 삭제? [Y/n]: ").strip().lower() != "n":
+                os.unlink(args.key_file); print("삭제됨.")
+            else:
+                print(f"[경고] 평문 키파일이 디스크에 남았습니다: {args.key_file} — 직접 삭제 권장.",
+                      file=sys.stderr)
+        else:
+            print("ADC 사용(키 미저장). 'gcloud auth application-default login' 또는 "
+                  "GOOGLE_APPLICATION_CREDENTIALS 환경변수를 설정하세요.")
+        os.makedirs(os.path.dirname(cloud_config_path()), exist_ok=True)
+        with open(cloud_config_path(), "w") as f: json.dump(cfg, f)
+        print("권장 IAM: 버킷 한정 roles/storage.objectAdmin (프로젝트 전역 금지).")
+        return 0
+    if args.command == "cloud-upload":
+        from ios_backup_vault.uploader import upload_backup
+        n = upload_backup(args.backup, udid=args.udid, store=_make_store(),
+                          delete_local=args.delete_local,
+                          on_file=lambda r, st: None)
+        print(f"업로드 완료: {n}개 전송" + (" · 로컬 삭제" if args.delete_local else "")); return 0
+    if args.command == "cloud-list":
+        for u in _make_store().list_udids(): print("  " + u)
         return 0
     return 1
 
