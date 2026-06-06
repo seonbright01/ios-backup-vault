@@ -51,14 +51,17 @@ class _Job:
     lines: list[str] = field(default_factory=list)
     events: "queue.Queue" = field(default_factory=queue.Queue)
     lock: threading.Lock = field(default_factory=threading.Lock)
+    destination: str = "local"
+    result: "dict | None" = None
 
 
 class ImagingManager:
-    def __init__(self, *, run_backup=None, precheck_fn=None, max_log_lines=2000):
+    def __init__(self, *, run_backup=None, precheck_fn=None, max_log_lines=2000, upload_fn=None):
         # 실제 백업 실행기/사전점검(주입 가능, 기본은 device 기반).
         self._run_backup = run_backup or self._default_run_backup
         self._precheck_fn = precheck_fn or self._default_precheck
         self._max = max_log_lines
+        self._upload_fn = upload_fn
         self._job: _Job | None = None
         self._lock = threading.Lock()
 
@@ -96,11 +99,13 @@ class ImagingManager:
         }
 
     # ---- 잡 실행 ----
-    def start(self, target: str) -> str:
+    def start(self, target: str, *, destination: str = "local") -> str:
+        if destination not in ("local", "cloud"):
+            raise ValueError("알 수 없는 목적지")
         with self._lock:
             if self._job is not None and self._job.state == "running":
                 raise RuntimeError("이미 진행 중인 이미징 작업이 있습니다(동시 1개만 가능).")
-            job = _Job(job_id=uuid.uuid4().hex[:12], target=target)
+            job = _Job(job_id=uuid.uuid4().hex[:12], target=target, destination=destination)
             self._job = job
         t = threading.Thread(target=self._run, args=(job,), daemon=True)
         t.start()
@@ -116,10 +121,19 @@ class ImagingManager:
 
         try:
             backup_path = self._run_backup(job.target, _emit)
-            with job.lock:
-                job.state = "done"
-                job.backup_path = backup_path
-            job.events.put({"state": "done", "backup_path": backup_path})
+            if job.destination == "cloud":
+                if self._upload_fn is None:
+                    raise RuntimeError("클라우드 업로드가 구성되지 않았습니다.")
+                result = self._upload_fn(backup_path, _emit)
+                with job.lock:
+                    job.state = "done"
+                    job.result = result
+                job.events.put({"state": "done", "destination": "cloud", **(result or {})})
+            else:
+                with job.lock:
+                    job.state = "done"
+                    job.backup_path = backup_path
+                job.events.put({"state": "done", "backup_path": backup_path})
         except Exception as exc:  # noqa: BLE001 — 모든 실패를 잡 상태로 수렴
             with job.lock:
                 job.state = "error"
@@ -156,6 +170,8 @@ class ImagingManager:
                 out["backup_path"] = job.backup_path
             if job.error:
                 out["error"] = job.error
+            if job.result:
+                out["result"] = job.result
         return out
 
     def stream(self, job_id: str):

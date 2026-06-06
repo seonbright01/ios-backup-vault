@@ -642,6 +642,7 @@ INDEX_HTML = """<!DOCTYPE html>
         <button class="tab" role="tab" id="vtab-whatsapp"  aria-controls="vp-whatsapp"  aria-selected="false" data-vtab="whatsapp" tabindex="-1">WhatsApp</button>
         <button class="tab" role="tab" id="vtab-chatgpt"   aria-controls="vp-chatgpt"   aria-selected="false" data-vtab="chatgpt" tabindex="-1">ChatGPT</button>
         <button class="tab" role="tab" id="vtab-notes"     aria-controls="vp-notes"     aria-selected="false" data-vtab="notes" tabindex="-1">메모</button>
+        <button class="tab" role="tab" id="vtab-files"     aria-controls="vp-files"     aria-selected="false" data-vtab="files" tabindex="-1">파일</button>
       </div>
 
       <div class="tabpanel" role="tabpanel" id="vp-summary" aria-labelledby="vtab-summary"><!-- renderViewer() --></div>
@@ -652,6 +653,7 @@ INDEX_HTML = """<!DOCTYPE html>
       <div class="tabpanel" role="tabpanel" id="vp-whatsapp" aria-labelledby="vtab-whatsapp" hidden></div>
       <div class="tabpanel" role="tabpanel" id="vp-chatgpt" aria-labelledby="vtab-chatgpt" hidden></div>
       <div class="tabpanel" role="tabpanel" id="vp-notes" aria-labelledby="vtab-notes" hidden></div>
+      <div class="tabpanel" role="tabpanel" id="vp-files" aria-labelledby="vtab-files" hidden></div>
     </section>
 
     <!-- ============ 화면 4: 새 이미징 ============ -->
@@ -672,8 +674,13 @@ INDEX_HTML = """<!DOCTYPE html>
 
         <!-- 단계 1 -->
         <div class="wcard">
-          <div class="wcard-head"><h3>① 저장 폴더 선택</h3></div>
+          <div class="wcard-head"><h3>① 목적지 · 저장 폴더</h3></div>
           <div class="wcard-body">
+            <div class="dest-choice" style="margin-bottom:.7rem;display:flex;gap:1.2rem;flex-wrap:wrap">
+              <label><input type="radio" name="imgDest" value="local" checked> 로컬 폴더에 저장</label>
+              <label><input type="radio" name="imgDest" value="cloud"> 클라우드(이미징 후 자동 업로드 · 로컬 삭제)</label>
+            </div>
+            <div id="destHint" class="muted" style="font-size:.85rem;margin-bottom:.5rem"></div>
             <button class="btn" id="pickFolder">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
               저장 폴더 선택
@@ -1247,6 +1254,61 @@ async function renderVPanel(name){
         + esc(n.title) + ' <small style="color:var(--text-3)">'+esc(n.modified)+'</small></summary>'
         + '<pre style="white-space:pre-wrap;font-family:inherit;padding:0 var(--sp-4) var(--sp-4);margin:0">'+esc(n.body)+'</pre></details>'
       ).join("") || '<p class="page-desc">메모가 없습니다.</p>';
+    } else if(name === "files"){
+      const list = await jget(vurl("/files")); vcache.files = list;
+      if(!list || list.length === 0){
+        panel.innerHTML = '<p class="page-desc">저장된 파일이 없습니다.</p>';
+      } else {
+        const CAT_LABELS = {document:"문서", image:"이미지", video:"영상", audio:"오디오", archive:"압축"};
+        const counts = {};
+        for(const f of list){ counts[f.category] = (counts[f.category]||0)+1; }
+        // default to "document", or fall back to category with most files
+        let activeCat = "document";
+        if(!(counts["document"] > 0)){
+          activeCat = Object.entries(counts).sort((a,b)=>b[1]-a[1])[0][0];
+        }
+        function renderFiles(cat){
+          const rows = list.filter(f=>f.category===cat);
+          const cap = 500;
+          const shown = rows.slice(0, cap);
+          const extra = rows.length - shown.length;
+          let html = shown.map(f=>{
+            const dlUrl = vurl("/files/"+encodeURIComponent(f.file_id));
+            let extras = '';
+            if(f.category === "image"){
+              extras += '<img src="'+dlUrl+'" loading="lazy" style="max-height:64px;vertical-align:middle;margin-left:8px">';
+            }
+            if(f.category === "document" && f.ext === "pdf"){
+              extras += ' <a href="'+dlUrl+'" target="_blank">열기</a>';
+            }
+            extras += ' <a href="'+dlUrl+'" download="'+esc(f.filename)+'">다운로드</a>';
+            return '<tr><td>'+esc(f.app||"")+'</td><td>'+esc(f.filename)+'</td><td>'+extras+'</td></tr>';
+          }).join("");
+          if(extra > 0) html += '<tr><td colspan="3" style="color:var(--text-3);padding:var(--sp-2)">… 외 '+extra+'개 더</td></tr>';
+          return html;
+        }
+        function buildPanel(cat){
+          const chips = Object.entries(CAT_LABELS).map(([k,label])=>{
+            const cnt = counts[k]||0;
+            const active = k===cat ? 'style="font-weight:700;text-decoration:underline"' : '';
+            return '<button class="file-chip" data-cat="'+k+'" '+active+' style="margin-right:8px;padding:4px 10px;cursor:pointer">'+esc(label)+' ('+cnt+')</button>';
+          }).join("");
+          const rows = renderFiles(cat);
+          const tbl = rows
+            ? '<table style="width:100%;border-collapse:collapse"><thead><tr><th style="text-align:left;padding:4px 8px">앱</th><th style="text-align:left;padding:4px 8px">파일명</th><th style="text-align:left;padding:4px 8px">작업</th></tr></thead><tbody>'+rows+'</tbody></table>'
+            : '<p class="page-desc">이 분류에 파일이 없습니다.</p>';
+          return '<div class="panel" style="padding:var(--sp-4)">'
+            + '<div style="margin-bottom:var(--sp-3)">'+chips+'</div>'
+            + tbl
+            + '</div>';
+        }
+        panel.innerHTML = buildPanel(activeCat);
+        panel.addEventListener("click", e=>{
+          const btn = e.target.closest(".file-chip");
+          if(!btn) return;
+          panel.innerHTML = buildPanel(btn.dataset.cat);
+        });
+      }
     }
     if($("#selectAll")) $("#selectAll").checked = false;
   } catch(e) {
@@ -1255,7 +1317,7 @@ async function renderVPanel(name){
 }
 
 /* 열람 탭 (role=tablist, 키보드 화살표 지원) */
-const VTABS = ["summary","messages","media","contacts","calls","whatsapp","chatgpt","notes"];
+const VTABS = ["summary","messages","media","contacts","calls","whatsapp","chatgpt","notes","files"];
 let currentVTab = "summary";
 function selectVTab(name){
   currentVTab = name;
@@ -1433,6 +1495,17 @@ function setRunStatus(label, cls){
 
 $("#clearLog").addEventListener("click", ()=>{ $("#console").innerHTML = ""; });
 
+function imgDest(){ const el = document.querySelector('input[name="imgDest"]:checked'); return el ? el.value : "local"; }
+function updateDestHint(){
+  const h = $("#destHint");
+  if(!h) return;
+  h.textContent = imgDest() === "cloud"
+    ? "클라우드 선택: 이 폴더는 임시 스테이징입니다. 이미징→업로드 후 로컬 스테이징은 자동 삭제됩니다(이미징 중 한시적으로 기기 용량만큼 공간 필요). 먼저 클라우드 설정이 되어 있어야 합니다."
+    : "로컬 폴더에 백업을 저장하고 목록에 등록합니다.";
+}
+document.querySelectorAll('input[name="imgDest"]').forEach(r => r.addEventListener("change", updateDestHint));
+updateDestHint();
+
 let imagingSource = null;
 $("#startBackup").addEventListener("click", async ()=>{
   if(!targetPath){ alert("저장 폴더를 먼저 선택하세요."); return; }
@@ -1440,7 +1513,7 @@ $("#startBackup").addEventListener("click", async ()=>{
   setRunStatus("진행", "badge-run");
   let jobId;
   try {
-    const r = await jpost("/api/imaging/start", {target: targetPath});
+    const r = await jpost("/api/imaging/start", {target: targetPath, destination: imgDest()});
     if(r.error){ logLine(r.error, "err"); setRunStatus("오류","badge-err"); $("#startBackup").disabled=false; return; }
     jobId = r.job_id;
   } catch(e) {
@@ -1453,7 +1526,11 @@ $("#startBackup").addEventListener("click", async ()=>{
     let m; try { m = JSON.parse(ev.data); } catch(e) { return; }
     if(m.state === "done"){
       setRunStatus("완료", "badge-ok");
-      logLine("백업 완료 — 목록에 등록되었습니다.", "ok");
+      if(m.destination === "cloud"){
+        logLine("클라우드 업로드 완료 — 로컬 스테이징 삭제됨" + (m.uploaded!=null ? (" (업로드 "+m.uploaded+"개)") : "") + ".", "ok");
+      } else {
+        logLine("백업 완료 — 목록에 등록되었습니다.", "ok");
+      }
       imagingSource.close(); imagingSource = null;
       $("#startBackup").disabled = false;
       loadDashboard();

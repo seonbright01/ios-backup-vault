@@ -51,6 +51,15 @@ class FakeViewer:
             return b"\xff\xd8jpeg", "image/jpeg"
         return None
 
+    def files(self):
+        return [{"file_id": "f1", "filename": "report.pdf", "ext": "pdf",
+                 "category": "document", "app": "카카오톡", "path": "docs/report.pdf"}]
+
+    def file_bytes(self, file_id):
+        if file_id == "f1":
+            return b"%PDF data", "application/pdf"
+        return None
+
     def search(self, q):
         return {"messages": [{"text": q, "timestamp": "t"}], "contacts": []}
 
@@ -173,6 +182,25 @@ def test_viewer_export(tmp_path):
     r = client.post(f"/api/backups/{bid}/export", json={"formats": ["json"], "items": {}})
     assert r.status_code == 200
     assert 'filename="export.json"' in r.headers["content-disposition"]
+
+
+def test_viewer_files_list_and_bytes(tmp_path):
+    client, bid = _opened_client(tmp_path)
+    d = client.get(f"/api/backups/{bid}/files").json()
+    assert len(d) == 1 and d[0]["file_id"] == "f1" and d[0]["filename"] == "report.pdf"
+    r = client.get(f"/api/backups/{bid}/files/f1")
+    assert r.status_code == 200 and r.content == b"%PDF data"
+    assert client.get(f"/api/backups/{bid}/files/UNKNOWN").status_code == 404
+
+
+def test_files_tab_present_in_html(tmp_path):
+    reg = _reg(tmp_path)
+    app = create_app(reg, metadata_fn=_meta)
+    client = TestClient(app)
+    html = client.get("/").text
+    assert 'data-vtab="files"' in html
+    assert 'id="vp-files"' in html
+    assert "파일" in html
 
 
 def test_viewer_409_without_open(tmp_path):

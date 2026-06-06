@@ -157,7 +157,12 @@ def create_app(
     preselect_id=None,
     cloud_store_factory=_default_cloud_store_factory,
     cloud_vault_factory=_default_cloud_vault_factory,
+    cloud_config_exists=None,
 ) -> FastAPI:
+    if cloud_config_exists is None:
+        from ios_backup_vault.paths import cloud_config_path
+        cloud_config_exists = lambda: os.path.exists(cloud_config_path())
+
     app = FastAPI(title="ios-backup-vault")
 
     # 열린 백업: id -> ViewerData (단일/다중 모두 허용; 단일 활성 흐름은 프론트가 관리)
@@ -166,7 +171,20 @@ def create_app(
 
     if imaging is None:
         from ios_backup_vault.imaging import ImagingManager
-        imaging = ImagingManager()
+        from ios_backup_vault import uploader
+
+        def _default_upload_fn(backup_path, emit):
+            udid = os.path.basename(backup_path.rstrip("/"))
+            store = cloud_store_factory()
+            emit(f"클라우드 업로드 시작 (udid={udid})…", "info")
+            count = uploader.upload_backup(
+                backup_path, udid=udid, store=store, delete_local=True,
+                on_file=lambda rel, act: emit(f"[{act}] {rel}", ""),
+            )
+            emit("클라우드 업로드 완료 — 로컬 스테이징 삭제됨", "ok")
+            return {"cloud_udid": udid, "uploaded": int(count or 0)}
+
+        imaging = ImagingManager(upload_fn=_default_upload_fn)
 
     def _registered_paths() -> dict[str, dict]:
         """id -> 레지스트리 엔트리."""
@@ -375,6 +393,24 @@ def create_app(
         content, mime = got
         return _media_response(content, mime, request)
 
+    @app.get("/api/backups/{backup_id}/files")
+    async def api_files(backup_id: str):
+        v, err = _viewer_or_409(backup_id)
+        if err:
+            return err
+        return v.files()
+
+    @app.get("/api/backups/{backup_id}/files/{file_id}")
+    async def api_file_bytes(backup_id: str, file_id: str, request: Request):
+        v, err = _viewer_or_409(backup_id)
+        if err:
+            return err
+        got = v.file_bytes(file_id)
+        if got is None:
+            return JSONResponse({"error": "파일을 찾을 수 없습니다."}, status_code=404)
+        content, mime = got
+        return _media_response(content, mime, request)
+
     @app.post("/api/backups/{backup_id}/export")
     async def api_export(backup_id: str, payload: dict):
         v, err = _viewer_or_409(backup_id)
@@ -485,11 +521,17 @@ def create_app(
 
     @app.post("/api/imaging/start")
     async def api_imaging_start(payload: dict):
-        target = (payload or {}).get("target", "") or ""
+        payload = payload or {}
+        target = payload.get("target", "") or ""
+        destination = payload.get("destination", "local") or "local"
         if not target:
             return JSONResponse({"error": "저장 폴더(target)가 필요합니다."}, status_code=400)
+        if destination not in ("local", "cloud"):
+            return JSONResponse({"error": "알 수 없는 목적지입니다."}, status_code=400)
+        if destination == "cloud" and not cloud_config_exists():
+            return JSONResponse({"error": "클라우드 설정이 없습니다 — 먼저 클라우드(cloud-config)를 설정하세요."}, status_code=400)
         try:
-            job_id = imaging.start(target)
+            job_id = imaging.start(target, destination=destination)
         except RuntimeError:  # 동시 1개 제한
             return JSONResponse({"error": "이미 이미징이 진행 중입니다."}, status_code=409)
         return {"job_id": job_id}
@@ -521,6 +563,9 @@ def create_app(
 
     def _maybe_register_result(st: dict) -> None:
         if st.get("state") != "done":
+            return
+        # 클라우드 완료 이벤트는 로컬 경로가 없으므로 등록하지 않는다(벨트+멜빵).
+        if st.get("destination") == "cloud":
             return
         bp = st.get("backup_path")
         if not bp or bp in _registered_results:

@@ -18,11 +18,49 @@ from ios_backup_vault.vault import VaultError
 
 logger = logging.getLogger(__name__)
 
+# 저장 파일 탭: 사용자 문서/미디어 확장자 화이트리스트 (카메라롤·노이즈 제외)
+_FILE_CATEGORY = {
+    # document
+    "pdf": "document", "hwp": "document", "hwpx": "document", "doc": "document",
+    "docx": "document", "xls": "document", "xlsx": "document", "ppt": "document",
+    "pptx": "document", "csv": "document", "rtf": "document", "epub": "document",
+    "pages": "document", "numbers": "document", "key": "document",
+    # image
+    "jpg": "image", "jpeg": "image", "png": "image", "heic": "image", "heif": "image",
+    "gif": "image", "webp": "image", "bmp": "image", "tiff": "image",
+    # video
+    "mp4": "video", "mov": "video", "m4v": "video", "avi": "video", "mkv": "video",
+    # audio
+    "m4a": "audio", "mp3": "audio", "wav": "audio", "aac": "audio", "caf": "audio", "flac": "audio",
+    # archive
+    "zip": "archive",
+}
+# 경로/도메인에 이 조각이 있으면 노이즈로 제외(캐시·웹킷·분석·크래시·로그)
+_FILE_NOISE = ("/caches/", "/webkit/", "/tmp/", ".tipkit", "fbsdk", "facebook-sdk",
+               "/logs/", "googleanalytics", "/ssoauth/", "com.braze", "bugsnag",
+               "/crashreporter/", "/library/cookies/")
+# 앱 도메인 → 친근한 라벨(없으면 번들 id 노출)
+_APP_LABEL = {
+    "com.iwilab.KakaoTalk": "카카오톡", "net.whatsapp.WhatsApp": "WhatsApp",
+    "com.burbn.instagram": "Instagram", "com.openai.chat": "ChatGPT",
+    "com.google.chrome.ios": "Chrome", "com.adobe.scan.ios": "Adobe Scan",
+}
+
+
+def _app_label_from_domain(domain: str) -> str:
+    d = domain or ""
+    for pre in ("AppDomainGroup-group.", "AppDomain-", "SysContainerDomain-"):
+        if d.startswith(pre):
+            d = d[len(pre):]
+            break
+    return _APP_LABEL.get(d, d or "(기타)")
+
 
 class ViewerData:
     def __init__(self, vault):
         self._v = vault
         self._media_index = None
+        self._files_index = None
         self._contact_idx = None
 
     def _parse_sqlite(self, relative_path, parser):
@@ -116,6 +154,52 @@ class ViewerData:
             return None
         raw, mtime = got
         return raw, (mimetypes.guess_type(rel)[0] or "application/octet-stream"), mtime
+
+    def files(self):
+        """백업에 저장된 문서/미디어 파일 목록(카메라롤·노이즈·썸네일 제외)."""
+        self._files_index = {}
+        out = []
+        for fid, domain, rel in self._v.manifest_files():
+            if not rel or domain == "CameraRollDomain":
+                continue
+            low = (domain + "/" + rel).lower()
+            if any(n in low for n in _FILE_NOISE):
+                continue
+            name = rel.rsplit("/", 1)[-1]
+            if "_thumb" in name.lower():        # 썸네일 중복 제외
+                continue
+            ext = name.rsplit(".", 1)[-1].lower() if "." in name else ""
+            cat = _FILE_CATEGORY.get(ext)
+            if not cat:
+                continue
+            self._files_index[fid] = (domain, rel)
+            out.append({
+                "file_id": fid, "filename": name, "ext": ext, "category": cat,
+                "app": _app_label_from_domain(domain), "path": rel,
+            })
+        out.sort(key=lambda e: (e["category"], e["app"], e["filename"].lower()))
+        return out
+
+    def file_bytes_and_mtime(self, file_id):
+        """(bytes, mime, mtime). 없으면 None."""
+        if self._files_index is None:
+            self.files()
+        loc = self._files_index.get(file_id)
+        if loc is None:
+            return None
+        domain, rel = loc
+        got = self._v.read_bytes_and_mtime(rel, domain_like=domain)
+        if got is None:
+            return None
+        raw, mtime = got
+        return raw, (mimetypes.guess_type(rel)[0] or "application/octet-stream"), mtime
+
+    def file_bytes(self, file_id):
+        got = self.file_bytes_and_mtime(file_id)
+        if got is None:
+            return None
+        raw, mime, _ = got
+        return raw, mime
 
     def media_bytes(self, file_id):
         got = self.media_bytes_and_mtime(file_id)

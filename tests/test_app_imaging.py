@@ -33,7 +33,7 @@ class FakeImagingRunning:
     def precheck(self, target):
         return {"udid": "U9", "fits": True, "free_bytes": 1000, "required_bytes": 100}
 
-    def start(self, target):
+    def start(self, target, *, destination="local"):
         self.started.append(target)
         return "job123"
 
@@ -186,3 +186,92 @@ def test_manager_error_state():
     st = mgr.status(job_id)
     assert st["state"] == "error"
     assert "백업 실패" in st["error"]
+
+
+# ---- destination + cloud-config gate tests ----
+
+class FakeImagingWithDestination:
+    """destination 인자를 기록하는 가짜 imaging."""
+
+    def __init__(self):
+        self.calls = []  # list of (target, destination)
+
+    def precheck(self, target):
+        return {"udid": "U9", "fits": True, "free_bytes": 1000, "required_bytes": 100}
+
+    def start(self, target, *, destination="local"):
+        self.calls.append((target, destination))
+        return "jobDEST"
+
+    def status(self, job_id):
+        return None
+
+    def stream(self, job_id):
+        return iter([])
+
+
+def test_imaging_start_cloud_requires_config(tmp_path):
+    """cloud_config_exists=False → 400, 에러에 '클라우드' 포함."""
+    reg = _empty_reg(tmp_path)
+    img = FakeImagingWithDestination()
+    app = create_app(
+        reg,
+        imaging=img,
+        metadata_fn=_meta,
+        cloud_config_exists=lambda: False,
+    )
+    client = TestClient(app)
+    r = client.post("/api/imaging/start", json={"target": "/dest", "destination": "cloud"})
+    assert r.status_code == 400
+    assert "클라우드" in r.json()["error"]
+    assert img.calls == []  # start should NOT be called
+
+
+def test_imaging_start_cloud_ok_when_configured(tmp_path):
+    """cloud_config_exists=True → 200, start 호출 시 destination='cloud'."""
+    reg = _empty_reg(tmp_path)
+    img = FakeImagingWithDestination()
+    app = create_app(
+        reg,
+        imaging=img,
+        metadata_fn=_meta,
+        cloud_config_exists=lambda: True,
+    )
+    client = TestClient(app)
+    r = client.post("/api/imaging/start", json={"target": "/dest", "destination": "cloud"})
+    assert r.status_code == 200
+    assert r.json()["job_id"] == "jobDEST"
+    assert img.calls == [("/dest", "cloud")]
+
+
+def test_imaging_start_defaults_to_local(tmp_path):
+    """destination 없이 POST → start가 destination='local'로 호출됨."""
+    reg = _empty_reg(tmp_path)
+    img = FakeImagingWithDestination()
+    app = create_app(
+        reg,
+        imaging=img,
+        metadata_fn=_meta,
+        cloud_config_exists=lambda: True,
+    )
+    client = TestClient(app)
+    r = client.post("/api/imaging/start", json={"target": "/dest"})
+    assert r.status_code == 200
+    assert r.json()["job_id"] == "jobDEST"
+    assert img.calls == [("/dest", "local")]
+
+
+def test_imaging_wizard_has_destination_choice(tmp_path):
+    """GET / returns HTML containing destination radio + cloud option text."""
+    reg = tmp_path / "registry.json"
+    reg.write_text(json.dumps({"backups": []}), encoding="utf-8")
+    app = create_app(
+        str(reg),
+        imaging=FakeImagingRunning(),
+        metadata_fn=_meta,
+    )
+    client = TestClient(app)
+    html = client.get("/").text
+    assert 'name="imgDest"' in html
+    assert 'value="cloud"' in html
+    assert "자동 업로드" in html
